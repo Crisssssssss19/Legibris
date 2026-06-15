@@ -1,0 +1,55 @@
+name: legibris
+description: "Legibris - A social reading and book tracking application."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management
+  flutter_riverpod: ^2.4.9
+  riverpod_annotation: ^2.3.3
+
+  # Routing & Navigation
+  go_router: ^13.2.0
+
+  # Local Persistence (Offline First)
+  drift: ^2.16.0
+  sqlite3_flutter_libs: ^0.5.18
+  path_provider: ^2.1.2
+  path: ^1.9.0
+  hive_flutter: ^1.1.0
+
+  # Backend & Utilities
+  supabase_flutter: ^2.4.0
+  dio: ^5.4.0
+  connectivity_plus: ^5.0.2
+  uuid: ^4.3.3
+  intl: ^0.19.0
+
+  # UI & Presentation
+  google_fonts: ^6.1.0
+  font_awesome_flutter: ^10.7.0
+  fl_chart: ^0.66.0
+  cached_network_image: ^3.3.1
+  flutter_spinkit: ^5.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # Code Generation
+  build_runner: ^2.4.8
+  drift_dev: ^2.16.0
+  riverpod_generator: ^2.3.9
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/icons/

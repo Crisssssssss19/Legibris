@@ -1,0 +1,93 @@
+name: Legibris CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, qa ]
+  pull_request:
+    branches: [ main, develop, qa ]
+
+jobs:
+  # Job 1: Flutter Frontend Verification
+  flutter-test:
+    name: Flutter Linting, Format & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java (required for Android builds)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Check formatting
+        run: dart format --set-exit-if-changed lib/
+
+      - name: Analyze code (Linter)
+        run: flutter analyze
+
+      - name: Run unit and widget tests
+        run: flutter test --coverage
+
+  # Job 2: Supabase Backend Database Verification
+  supabase-test:
+    name: Supabase DDL Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PostgreSQL Client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Start Local PostgreSQL Docker for syntax check
+        run: |
+          docker run --name pg-test -e POSTGRES_PASSWORD=postgres -d -p 5432:5432 postgres:15
+          sleep 5
+
+      - name: Validate SQL scripts syntax
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -f database/schema.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -f database/security_policies.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -f database/triggers_and_functions.sql
+
+  # Job 3: Automated Deployments based on environments
+  deploy:
+    name: Build & Deploy to Environments
+    needs: [flutter-test, supabase-test]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # DEV Environment Deploy (develop branch push)
+      - name: Deploy to Dev
+        if: github.ref == 'refs/heads/develop'
+        run: |
+          echo "Deploying to DEV Env (Firebase App Distribution)..."
+          # Commands: flutter build apk --debug, firebase appdistribution:distribute
+
+      # QA Environment Deploy (qa branch push)
+      - name: Deploy to QA
+        if: github.ref == 'refs/heads/qa'
+        run: |
+          echo "Deploying to QA Environment..."
+          # Commands: flutter build apk --profile
+
+      # PROD Environment Deploy (main branch push)
+      - name: Deploy to Production
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "Deploying to PRODUCTION (Google Play Console & Apple App Store Connect)..."
+          # Commands: flutter build appbundle, fastlane deploy_prod
