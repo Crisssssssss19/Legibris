@@ -34,7 +34,7 @@ class WelcomeScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      'Leterbox',
+                      'Legibris',
                       style: Theme.of(context).textTheme.displayLarge?.copyWith(
                             color: AppTheme.softBlack,
                             fontWeight: FontWeight.bold,

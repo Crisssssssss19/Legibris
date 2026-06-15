@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   BookOpen, 
   Search, 
@@ -29,6 +29,7 @@ import {
   FolderHeart,
   User
 } from 'lucide-react';
+import { supabase } from './supabaseClient';
 
 // Define standard types for our preview app
 type Screen = 'onboarding' | 'login' | 'register' | 'home' | 'shelf' | 'stats' | 'calendar' | 'goals' | 'premium' | 'profile';
@@ -46,11 +47,28 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>('onboarding');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [simulatedPlatform, setSimulatedPlatform] = useState<'web' | 'android' | 'ios'>('web');
   
-  // Interactive mock user variables
+  // Interactive mock user variables / Supabase auth session
+  const [session, setSession] = useState<any>(null);
   const [username, setUsername] = useState('cris_lector');
+  const [fullName, setFullName] = useState('Cris Lector');
+  const [bio, setBio] = useState('Apasionado de la ciencia ficción, la historia y el desarrollo personal.');
   const [email, setEmail] = useState('cris@ejemplo.com');
+  const [password, setPassword] = useState('seguridad123');
   const [acceptTerms, setAcceptTerms] = useState(false);
+
+  // Custom alert modal state
+  const [alertModal, setAlertModal] = useState<{ show: boolean; title: string; message: string }>({
+    show: false,
+    title: '',
+    message: ''
+  });
+
+  // Add book modal state
+  const [addBookModal, setAddBookModal] = useState(false);
+  const [newBookTitle, setNewBookTitle] = useState('');
+  const [newBookAuthor, setNewBookAuthor] = useState('');
 
   // App Reading States
   const [habitosProgress, setHabitosProgress] = useState(68);
@@ -76,39 +94,230 @@ export default function App() {
   const readDates = [2, 6, 8, 10, 13, 19, 22, 27, 30];
   const [loggedDays, setLoggedDays] = useState<number[]>(readDates);
 
-  // Function to add a book to the library
+  // Helper function to trigger the custom alert modal
+  const triggerAlert = (title: string, message: string) => {
+    setAlertModal({ show: true, title, message });
+  };
+
+  // ---------------------------------------------------------------------------
+  // SUPABASE INTEGRATION HANDLERS
+  // ---------------------------------------------------------------------------
+
+  // Check auth session on startup
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) {
+        setEmail(session.user.email || '');
+        fetchProfile(session.user.id);
+        fetchUserBooks(session.user.id);
+        setCurrentScreen('home');
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+        setEmail(session.user.email || '');
+        fetchProfile(session.user.id);
+        fetchUserBooks(session.user.id);
+        setCurrentScreen('home');
+      } else {
+        setCurrentScreen('login');
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Fetch profiles table
+  const fetchProfile = async (uid: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', uid)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (data) {
+        setUsername(data.username || 'cris_lector');
+        setFullName(data.full_name || 'Cris Lector');
+        setBio(data.bio || 'Apasionado de la lectura');
+      }
+    } catch (e) {
+      console.log('Falta tabla profiles en Supabase (usando datos mock locales)');
+    }
+  };
+
+  // Fetch books from user_books linked to books catalog
+  const fetchUserBooks = async (uid: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('user_books')
+        .select('*, book:books(*)')
+        .eq('user_id', uid);
+
+      if (error) throw error;
+      if (data && data.length > 0) {
+        const parsedBooks: Book[] = data.map((item: any) => ({
+          id: item.book.id,
+          title: item.book.title,
+          author: item.book.publisher || 'Autor Desconocido',
+          progress: item.status === 'leido' ? 100 : 40,
+          status: item.status
+        }));
+        setBooks(parsedBooks);
+      }
+    } catch (e) {
+      console.log('Falta tabla user_books en Supabase (usando catálogo mock local)');
+    }
+  };
+
+  // Sign In using Supabase auth
+  const handleSupabaseLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        triggerAlert('Error', `Error al iniciar sesión: ${error.message}`);
+      } else {
+        triggerAlert('Éxito', 'Sesión iniciada con éxito en tu base de datos Supabase!');
+        setCurrentScreen('home');
+      }
+    } catch (err: any) {
+      triggerAlert('Error', `Error de conexión: ${err.message}`);
+    }
+  };
+
+  // Sign Up using Supabase auth
+  const handleSupabaseSignUp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!acceptTerms) {
+      triggerAlert('Términos', 'Debes aceptar los términos y condiciones.');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            username: username,
+            full_name: fullName,
+          }
+        }
+      });
+
+      if (error) {
+        triggerAlert('Error', `Error de registro: ${error.message}`);
+      } else {
+        triggerAlert('Éxito', 'Cuenta creada exitosamente en Supabase! Revisa tu correo para verificar el enlace.');
+        setCurrentScreen('login');
+      }
+    } catch (err: any) {
+      triggerAlert('Error', `Error de conexión: ${err.message}`);
+    }
+  };
+
+  // Log Out helper
+  const handleSupabaseLogout = async () => {
+    await supabase.signOut();
+    setSession(null);
+    setCurrentScreen('onboarding');
+  };
+
+  // Open the add book modal
   const handleAddBook = () => {
-    const title = prompt('Ingresa el título del libro:');
-    if (!title) return;
-    const author = prompt('Ingresa el autor:');
-    if (!author) return;
-    
+    setAddBookModal(true);
+  };
+
+  // Submit new book creation
+  const submitNewBook = async () => {
+    if (!newBookTitle || !newBookAuthor) {
+      triggerAlert('Falta información', 'Por favor completa el título y el autor del libro.');
+      return;
+    }
+
+    const title = newBookTitle;
+    const author = newBookAuthor;
+
+    // Local update
     const newBook: Book = {
       id: Date.now().toString(),
       title,
-      author: author || 'Autor Desconocido',
+      author,
       progress: 0,
       status: 'pendiente'
     };
     setBooks([...books, newBook]);
     setShelfFilter('pendiente');
+    setAddBookModal(false);
+    setNewBookTitle('');
+    setNewBookAuthor('');
+
+    // Attempt Supabase insert
+    if (session) {
+      try {
+        const { data: bookData, error: bookError } = await supabase
+          .from('books')
+          .upsert({ title, publisher: author })
+          .select()
+          .single();
+
+        if (bookError) throw bookError;
+
+        if (bookData) {
+          const { error: linkError } = await supabase
+            .from('user_books')
+            .insert({
+              user_id: session.user.id,
+              book_id: bookData.id,
+              status: 'pendiente'
+            });
+
+          if (linkError) throw linkError;
+          console.log('Libro sincronizado con Supabase.');
+        }
+      } catch (e) {
+        console.log('Error insertando en Supabase (ejecutando en modo local cache)');
+      }
+    }
   };
 
-  // Function to increase "Hábitos Atómicos" progress
-  const increaseProgress = () => {
+  // Increase "Hábitos Atómicos" progress
+  const increaseProgress = async () => {
     setHabitosProgress(prev => {
       const next = prev + 8;
       if (next >= 100) {
-        // Mark as finished
         setBooks(books.map(b => b.id === '1' ? { ...b, progress: 100, status: 'leido' } : b));
         return 100;
       }
       return next;
     });
+
+    // Sync session duration if online
+    if (session) {
+      try {
+        await supabase.from('reading_sessions').insert({
+          user_id: session.user.id,
+          book_id: '1',
+          duration_minutes: 15,
+          pages_read: 8,
+        });
+      } catch (e) {
+        console.log('Sesión de lectura en caché local.');
+      }
+    }
   };
 
   // Toggle calendar days completed
-  const toggleCalendarDay = (day: number) => {
+  const toggleCalendarDay = async (day: number) => {
     if (loggedDays.includes(day)) {
       setLoggedDays(loggedDays.filter(d => d !== day));
     } else {
@@ -123,126 +332,76 @@ export default function App() {
     setStreakDays(newStreaks);
   };
 
-  // Calculate current streak count based on streakDays
   const currentStreakCount = streakDays.filter(d => d).length;
 
   return (
-    <div className="app-container">
-      {/* LEFT PANEL: SYSTEM CONTROLLER & ARCHITECTURE SUMMARY */}
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div className="sidebar-logo-container">
-            <span className="sidebar-logo">
-              <BookOpen size={28} />
+    <div className="web-app-layout">
+      {/* Top sticky frosted-glass Navigation Bar */}
+      <header className="web-navbar">
+        <div className="navbar-container">
+          <div className="navbar-brand" onClick={() => setCurrentScreen('home')}>
+            <span className="navbar-logo">
+              <BookOpen size={24} />
             </span>
-            <h1 className="sidebar-title">Legibris</h1>
+            <span className="navbar-title">Legibris</span>
           </div>
-          <p className="sidebar-subtitle">
-            Dashboard interactivo de diseño y arquitectura. Utiliza los controles para navegar por las pantallas móviles de la aplicación.
-          </p>
-        </div>
 
-        <div className="section-divider" />
-
-        {/* Screen Selectors */}
-        <div className="control-group">
-          <h3 className="control-title">Navegación de Pantallas</h3>
-          <div className="screen-selectors">
+          <nav className="navbar-links">
             <button 
-              className={`selector-btn ${currentScreen === 'onboarding' ? 'active' : ''}`}
-              onClick={() => setCurrentScreen('onboarding')}
-            >
-              <Smartphone size={18} /> Onboarding / Bienvenida
-            </button>
-            <button 
-              className={`selector-btn ${currentScreen === 'login' ? 'active' : ''}`}
-              onClick={() => setCurrentScreen('login')}
-            >
-              <Mail size={18} /> Iniciar Sesión
-            </button>
-            <button 
-              className={`selector-btn ${currentScreen === 'register' ? 'active' : ''}`}
-              onClick={() => setCurrentScreen('register')}
-            >
-              <Plus size={18} /> Crear Cuenta
-            </button>
-            <button 
-              className={`selector-btn ${currentScreen === 'home' ? 'active' : ''}`}
+              className={`nav-link ${currentScreen === 'home' ? 'active' : ''}`} 
               onClick={() => setCurrentScreen('home')}
             >
-              <BookOpen size={18} /> Inicio (Dashboard)
+              Inicio
             </button>
             <button 
-              className={`selector-btn ${currentScreen === 'shelf' ? 'active' : ''}`}
+              className={`nav-link ${currentScreen === 'shelf' ? 'active' : ''}`} 
               onClick={() => setCurrentScreen('shelf')}
             >
-              <Grid size={18} /> Estantería (Biblioteca)
+              Estantería
             </button>
             <button 
-              className={`selector-btn ${currentScreen === 'stats' ? 'active' : ''}`}
+              className={`nav-link ${['stats', 'calendar'].includes(currentScreen) ? 'active' : ''}`} 
               onClick={() => setCurrentScreen('stats')}
             >
-              <BarChart3 size={18} /> Estadísticas
+              Estadísticas
             </button>
             <button 
-              className={`selector-btn ${currentScreen === 'calendar' ? 'active' : ''}`}
-              onClick={() => setCurrentScreen('calendar')}
-            >
-              <Calendar size={18} /> Calendario de Lecturas
-            </button>
-            <button 
-              className={`selector-btn ${currentScreen === 'goals' ? 'active' : ''}`}
+              className={`nav-link ${currentScreen === 'goals' ? 'active' : ''}`} 
               onClick={() => setCurrentScreen('goals')}
             >
-              <Award size={18} /> Metas y Logros
+              Metas
             </button>
             <button 
-              className={`selector-btn ${currentScreen === 'premium' ? 'active' : ''}`}
+              className={`nav-link ${currentScreen === 'premium' ? 'active' : ''}`} 
               onClick={() => setCurrentScreen('premium')}
             >
-              <Sparkles size={18} /> Premium (AI & Pagos)
+              Premium
             </button>
-            <button 
-              className={`selector-btn ${currentScreen === 'profile' ? 'active' : ''}`}
-              onClick={() => setCurrentScreen('profile')}
-            >
-              <User size={18} /> Perfil de Usuario
-            </button>
-          </div>
-        </div>
+          </nav>
 
-        <div className="section-divider" />
-
-        {/* Dynamic Architectural Overview card */}
-        <div className="arch-card">
-          <h4><Info size={16} style={{ verticalAlign: 'middle', marginRight: '6px' }} /> Arquitectura Legibris</h4>
-          <p>
-            Esta maqueta refleja fielmente los requerimientos visuales del cliente. El backend está modelado con 25 tablas en PostgreSQL (Supabase) con RLS estricto y triggers automáticos para la sincronización offline.
-          </p>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <span style={{ fontSize: '0.75rem', background: '#3D2E24', color: '#FFF', padding: '3px 8px', borderRadius: '20px', fontWeight: 'bold' }}>Flutter 3.x</span>
-            <span style={{ fontSize: '0.75rem', background: '#4CAF50', color: '#FFF', padding: '3px 8px', borderRadius: '20px', fontWeight: 'bold' }}>Supabase</span>
-            <span style={{ fontSize: '0.75rem', background: '#3498DB', color: '#FFF', padding: '3px 8px', borderRadius: '20px', fontWeight: 'bold' }}>Offline-First</span>
-          </div>
-        </div>
-      </aside>
-
-      {/* RIGHT PANEL: MOBILE DEVICE MOCK PREVIEW */}
-      <main className="preview-pane">
-        <div className="device-frame">
-          <div className="device-notch"></div>
-          
-          <div className="device-screen">
-            {/* Status Bar */}
-            <div className="device-status-bar">
-              <span>9:41</span>
-              <div className="device-status-icons">
-                <span style={{ fontSize: '0.75rem' }}>📶</span>
-                <span style={{ fontSize: '0.75rem' }}>🔋</span>
-              </div>
+          <div className="navbar-actions">
+            <div className="search-bar">
+              <Search size={16} className="search-icon" />
+              <input type="text" placeholder="Buscar libros, autores..." className="search-input" />
             </div>
 
-            {/* SCREEN RENDERING */}
+            {session ? (
+              <div className="profile-dropdown-trigger" onClick={() => setCurrentScreen('profile')}>
+                <span className="avatar-mini">👤</span>
+                <span className="username-label">@{username}</span>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="btn-navbar-sec" onClick={() => setCurrentScreen('login')}>Iniciar Sesión</button>
+                <button className="btn-navbar-pri" onClick={() => setCurrentScreen('register')}>Registrarse</button>
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* Main Responsive Content Viewport */}
+      <main className="web-main-content">
 
             {/* 1. ONBOARDING SCREEN */}
             {currentScreen === 'onboarding' && (
@@ -251,7 +410,7 @@ export default function App() {
                   <div className="onboarding-logo">
                     <BookOpen size={48} />
                   </div>
-                  <h2 className="onboarding-welcome-text">Leterbox</h2>
+                  <h2 className="onboarding-welcome-text">Legibris</h2>
                   <p className="onboarding-subtitle">Tu biblioteca. Tus metas. Tu historia.</p>
                   
                   <div className="onboarding-features">
@@ -306,41 +465,41 @@ export default function App() {
                     <BookOpen size={28} />
                   </div>
                   <h2 className="auth-title">Bienvenido</h2>
-                  <p className="auth-subtitle">Inicia sesión para continuar en Leterbox</p>
+                  <p className="auth-subtitle">Inicia sesión para continuar en Legibris</p>
                 </div>
 
-                <div className="form-group">
-                  <Mail className="form-icon" size={18} />
-                  <input 
-                    type="email" 
-                    placeholder="Correo electrónico" 
-                    className="form-input" 
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
-                </div>
+                <form onSubmit={handleSupabaseLogin}>
+                  <div className="form-group">
+                    <Mail className="form-icon" size={18} />
+                    <input 
+                      type="email" 
+                      placeholder="Correo electrónico" 
+                      className="form-input" 
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                    />
+                  </div>
 
-                <div className="form-group">
-                  <Lock className="form-icon" size={18} />
-                  <input 
-                    type={showPassword ? 'text' : 'password'} 
-                    placeholder="Contraseña" 
-                    className="form-input"
-                    value="seguridad123"
-                    readOnly
-                  />
-                  <button className="form-eye" onClick={() => setShowPassword(!showPassword)}>
-                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  <div className="form-group" style={{ marginBottom: '24px' }}>
+                    <Lock className="form-icon" size={18} />
+                    <input 
+                      type={showPassword ? 'text' : 'password'} 
+                      placeholder="Contraseña" 
+                      className="form-input"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                    />
+                    <button type="button" className="form-eye" onClick={() => setShowPassword(!showPassword)}>
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+
+                  <button type="submit" className="btn-primary" style={{ width: '100%' }}>
+                    Iniciar sesión
                   </button>
-                </div>
-
-                <a href="#forgot" className="forgot-pwd-link" onClick={(e) => e.preventDefault()}>
-                  ¿Olvidaste tu contraseña?
-                </a>
-
-                <button className="btn-primary" style={{ width: '100%' }} onClick={() => setCurrentScreen('home')}>
-                  Iniciar sesión
-                </button>
+                </form>
 
                 <div className="social-auth-divider">
                   <div className="divider-line"></div>
@@ -377,76 +536,67 @@ export default function App() {
                   <p className="auth-subtitle">Únete a miles de lectores hoy mismo</p>
                 </div>
 
-                <div className="form-group">
-                  <Smartphone className="form-icon" size={18} />
-                  <input 
-                    type="text" 
-                    placeholder="Nombre completo" 
-                    className="form-input" 
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                  />
-                </div>
+                <form onSubmit={handleSupabaseSignUp}>
+                  <div className="form-group">
+                    <Smartphone className="form-icon" size={18} />
+                    <input 
+                      type="text" 
+                      placeholder="Nombre de usuario" 
+                      className="form-input" 
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      required
+                    />
+                  </div>
 
-                <div className="form-group">
-                  <Mail className="form-icon" size={18} />
-                  <input 
-                    type="email" 
-                    placeholder="Correo electrónico" 
-                    className="form-input" 
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
-                </div>
+                  <div className="form-group">
+                    <Mail className="form-icon" size={18} />
+                    <input 
+                      type="email" 
+                      placeholder="Correo electrónico" 
+                      className="form-input" 
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                    />
+                  </div>
 
-                <div className="form-group">
-                  <Lock className="form-icon" size={18} />
-                  <input 
-                    type={showPassword ? 'text' : 'password'} 
-                    placeholder="Contraseña" 
-                    className="form-input"
-                    value="contrasenaSecreta"
-                    readOnly
-                  />
-                  <button className="form-eye" onClick={() => setShowPassword(!showPassword)}>
-                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  <div className="form-group">
+                    <Lock className="form-icon" size={18} />
+                    <input 
+                      type={showPassword ? 'text' : 'password'} 
+                      placeholder="Contraseña" 
+                      className="form-input"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                    />
+                    <button type="button" className="form-eye" onClick={() => setShowPassword(!showPassword)}>
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+
+                  <div className="terms-container">
+                    <input 
+                      type="checkbox" 
+                      className="terms-checkbox" 
+                      checked={acceptTerms}
+                      onChange={(e) => setAcceptTerms(e.target.checked)}
+                    />
+                    <span className="terms-text">
+                      Acepto los Términos y Condiciones y la Política de Privacidad de Legibris.
+                    </span>
+                  </div>
+
+                  <button 
+                    type="submit"
+                    className="btn-primary" 
+                    style={{ width: '100%', opacity: acceptTerms ? 1 : 0.6 }} 
+                    disabled={!acceptTerms}
+                  >
+                    Registrarme
                   </button>
-                </div>
-
-                <div className="form-group">
-                  <Lock className="form-icon" size={18} />
-                  <input 
-                    type={showConfirmPassword ? 'text' : 'password'} 
-                    placeholder="Confirmar contraseña" 
-                    className="form-input"
-                    value="contrasenaSecreta"
-                    readOnly
-                  />
-                  <button className="form-eye" onClick={() => setShowConfirmPassword(!showConfirmPassword)}>
-                    {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
-                </div>
-
-                <div className="terms-container">
-                  <input 
-                    type="checkbox" 
-                    className="terms-checkbox" 
-                    checked={acceptTerms}
-                    onChange={(e) => setAcceptTerms(e.target.checked)}
-                  />
-                  <span className="terms-text">
-                    Acepto los Términos y Condiciones y la Política de Privacidad de Legibris.
-                  </span>
-                </div>
-
-                <button 
-                  className="btn-primary" 
-                  style={{ width: '100%', opacity: acceptTerms ? 1 : 0.6 }} 
-                  disabled={!acceptTerms}
-                  onClick={() => setCurrentScreen('home')}
-                >
-                  Registrarme
-                </button>
+                </form>
 
                 <div style={{ marginTop: '24px', textAlign: 'center', fontSize: '0.85rem' }}>
                   <span>¿Ya tienes cuenta? </span>
@@ -463,104 +613,105 @@ export default function App() {
                 <div className="screen-header">
                   <h3 className="screen-title">Inicio</h3>
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <button style={{ border: 'none', background: 'none', color: 'var(--color-brown)' }} onClick={() => setCurrentScreen('premium')}>
+                    <button style={{ border: 'none', background: 'none', color: 'var(--color-brown)', cursor: 'pointer' }} onClick={() => setCurrentScreen('premium')}>
                       <Sparkles size={20} />
                     </button>
-                    <button style={{ border: 'none', background: 'none' }}>
+                    <button style={{ border: 'none', background: 'none', cursor: 'pointer' }}>
                       <Bell size={20} />
                     </button>
                   </div>
                 </div>
 
-                {/* Current reading */}
-                <h4 style={{ fontSize: '0.9rem', color: 'var(--text-light)', marginBottom: '8px' }}>Lectura actual</h4>
-                <div className="current-reading-card">
-                  <div className="book-cover-mock">
-                    <span>Hábitos<br/>Atómicos</span>
-                  </div>
-                  <div className="current-reading-info">
-                    <h5 className="book-title">Hábitos Atómicos</h5>
-                    <span className="book-author">James Clear</span>
-                    
-                    <div className="progress-header">
-                      <span>Progreso</span>
-                      <span>{habitosProgress}%</span>
-                    </div>
-                    <div className="progress-bar-container">
-                      <div className="progress-bar-fill" style={{ width: `${habitosProgress}%` }}></div>
-                    </div>
-                    
-                    <button className="btn-sm" onClick={increaseProgress}>
-                      <Clock size={14} /> Continuar leyendo
-                    </button>
-                  </div>
-                </div>
-
-                {/* Daily streak */}
-                <div className="streak-card">
-                  <div className="streak-header">
-                    <Flame size={18} color="#FF6B00" fill="#FF6B00" />
-                    <span>{currentStreakCount} días de racha</span>
-                  </div>
-                  <p className="streak-desc">¡Toca un día para registrar lectura y mantener la racha!</p>
-                  
-                  <div className="streak-grid">
-                    {['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((day, idx) => (
-                      <div className="streak-day-cell" key={day + idx}>
-                        <span className="streak-day-name">{day}</span>
-                        <button 
-                          className={`streak-day-bubble ${streakDays[idx] ? 'active' : ''}`}
-                          onClick={() => toggleStreakDay(idx)}
-                        >
-                          {streakDays[idx] ? <Check size={12} color="white" /> : null}
+                <div className="home-desktop-layout">
+                  {/* Left Column: Core Tracking */}
+                  <div className="home-main-col">
+                    <h4 style={{ fontSize: '1rem', color: 'var(--text-light)', marginBottom: '12px', fontWeight: 'bold' }}>Lectura actual</h4>
+                    <div className="current-reading-card" style={{ marginBottom: '24px' }}>
+                      <div className="book-cover-mock" style={{ width: '100px', height: '150px', fontSize: '0.9rem' }}>
+                        <span>Hábitos<br/>Atómicos</span>
+                      </div>
+                      <div className="current-reading-info">
+                        <h5 className="book-title" style={{ fontSize: '1.2rem' }}>Hábitos Atómicos</h5>
+                        <span className="book-author" style={{ fontSize: '0.9rem' }}>James Clear</span>
+                        
+                        <div className="progress-header" style={{ marginTop: 'auto' }}>
+                          <span>Progreso de lectura</span>
+                          <span>{habitosProgress}%</span>
+                        </div>
+                        <div className="progress-bar-container" style={{ margin: '8px 0 16px 0' }}>
+                          <div className="progress-bar-fill" style={{ width: `${habitosProgress}%` }}></div>
+                        </div>
+                        
+                        <button className="btn-sm" style={{ alignSelf: 'flex-start', padding: '12px 20px' }} onClick={increaseProgress}>
+                          <Clock size={16} /> Continuar leyendo
                         </button>
                       </div>
-                    ))}
-                  </div>
-                </div>
+                    </div>
 
-                {/* Monthly statistics summary */}
-                <div className="summary-header-row">
-                  <h4 style={{ fontSize: '0.9rem', color: 'var(--text-light)' }}>Resumen del mes</h4>
-                  <button className="summary-select" onClick={() => setCurrentScreen('stats')}>
-                    Este mes v
-                  </button>
-                </div>
+                    <div className="streak-card" style={{ marginBottom: '24px' }}>
+                      <div className="streak-header" style={{ fontSize: '1.1rem' }}>
+                        <Flame size={22} color="#FF6B00" fill="#FF6B00" />
+                        <span>{currentStreakCount} días de racha de lectura</span>
+                      </div>
+                      <p className="streak-desc">Toca los días de la semana para registrar tus sesiones de lectura y mantener activa tu racha.</p>
+                      
+                      <div className="streak-grid" style={{ gap: '12px', justifyContent: 'flex-start' }}>
+                        {['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map((day, idx) => (
+                          <div className="streak-day-cell" key={day + idx} style={{ flex: 1 }}>
+                            <span className="streak-day-name">{day}</span>
+                            <button 
+                              className={`streak-day-bubble ${streakDays[idx] ? 'active' : ''}`}
+                              onClick={() => toggleStreakDay(idx)}
+                              style={{ width: '40px', height: '40px', cursor: 'pointer' }}
+                            >
+                              {streakDays[idx] ? <Check size={16} color="white" /> : null}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
 
-                <div className="stats-grid-container">
-                  <div className="stat-grid-card">
-                    <span className="stat-grid-value">24</span>
-                    <span className="stat-grid-label">Libros leídos</span>
-                    <span className="stat-grid-change">↗ 2 vs mes pasado</span>
+                    <h4 style={{ fontSize: '1.1rem', color: 'var(--text-light)', marginTop: '20px', marginBottom: '16px', fontWeight: 'bold' }}>
+                      Continuar leyendo en tus estanterías
+                    </h4>
+                    <div className="horizontal-scroll-section" style={{ gap: '16px' }}>
+                      <div className="scroll-card" style={{ width: '130px', height: '190px', fontSize: '0.85rem' }} onClick={() => setCurrentScreen('shelf')}>
+                        <span>El monje que vendió su Ferrari</span>
+                      </div>
+                      <div className="scroll-card" style={{ width: '130px', height: '190px', fontSize: '0.85rem' }} onClick={() => setCurrentScreen('shelf')}>
+                        <span>Piense y hágase rico</span>
+                      </div>
+                      <div className="scroll-card" style={{ width: '130px', height: '190px', fontSize: '0.85rem' }} onClick={() => setCurrentScreen('shelf')}>
+                        <span>El poder del AHORA</span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="stat-grid-card">
-                    <span className="stat-grid-value">5,891</span>
-                    <span className="stat-grid-label">Páginas leídas</span>
-                    <span className="stat-grid-change">↗ 112 vs mes pasado</span>
-                  </div>
-                  <div className="stat-grid-card">
-                    <span className="stat-grid-value">14h 32m</span>
-                    <span className="stat-grid-label">Tiempo de lectura</span>
-                  </div>
-                  <div className="stat-grid-card">
-                    <span className="stat-grid-value">196</span>
-                    <span className="stat-grid-label">Páginas/día prom.</span>
-                  </div>
-                </div>
 
-                {/* Horizontal bookshelf scroll */}
-                <h4 style={{ fontSize: '0.9rem', color: 'var(--text-light)', marginTop: '24px', marginBottom: '8px' }}>
-                  Continuar leyendo
-                </h4>
-                <div className="horizontal-scroll-section">
-                  <div className="scroll-card" onClick={() => setCurrentScreen('shelf')}>
-                    <span>El monje que vendió su Ferrari</span>
-                  </div>
-                  <div className="scroll-card" onClick={() => setCurrentScreen('shelf')}>
-                    <span>Piense y hágase rico</span>
-                  </div>
-                  <div className="scroll-card" onClick={() => setCurrentScreen('shelf')}>
-                    <span>El poder del AHORA</span>
+                  {/* Right Column: Month Summary & Stats */}
+                  <div className="home-side-col">
+                    <div className="summary-header-row" style={{ marginTop: 0, marginBottom: '16px' }}>
+                      <h4 style={{ fontSize: '1rem', color: 'var(--text-light)', fontWeight: 'bold' }}>Resumen del mes</h4>
+                      <button className="summary-select" onClick={() => setCurrentScreen('stats')}>
+                        Este mes v
+                      </button>
+                    </div>
+
+                    <div className="stats-grid-container" style={{ gridTemplateColumns: '1fr', gap: '16px' }}>
+                      <div className="stat-grid-card" style={{ padding: '20px' }}>
+                        <span className="stat-grid-value" style={{ fontSize: '1.8rem' }}>24</span>
+                        <span className="stat-grid-label" style={{ fontSize: '0.9rem' }}>Libros leídos</span>
+                        <span className="stat-grid-change" style={{ fontSize: '0.8rem' }}>↗ 2 vs mes pasado</span>
+                      </div>
+                      <div className="stat-grid-card" style={{ padding: '20px' }}>
+                        <span className="stat-grid-value" style={{ fontSize: '1.8rem' }}>5,891</span>
+                        <span className="stat-grid-label" style={{ fontSize: '0.9rem' }}>Páginas leídas</span>
+                        <span className="stat-grid-change" style={{ fontSize: '0.8rem' }}>↗ 112 vs mes pasado</span>
+                      </div>
+                      <div className="stat-grid-card" style={{ padding: '20px' }}>
+                        <span className="stat-grid-value" style={{ fontSize: '1.8rem' }}>14h 32m</span>
+                        <span className="stat-grid-label" style={{ fontSize: '0.9rem' }}>Tiempo de lectura total</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -870,7 +1021,7 @@ export default function App() {
                 <div className="premium-logo-area" style={{ marginTop: '10px' }}>
                   <Star size={54} color="amber" fill="amber" style={{ color: '#D4AF37' }} />
                 </div>
-                <h3 className="premium-title">Leterbox Premium</h3>
+                <h3 className="premium-title">Legibris Premium</h3>
                 <p className="premium-subtitle">
                   Desbloquea las mejores herramientas de lectura e IA recomendadas por expertos.
                 </p>
@@ -925,8 +1076,16 @@ export default function App() {
                   </div>
                 </div>
 
-                <button className="btn-primary" style={{ width: '100%' }} onClick={() => alert('¡Suscripción de prueba registrada exitosamente!')}>
-                  Suscribirse ahora
+                <div style={{ textAlign: 'center', margin: '12px 0', fontSize: '0.8rem', color: 'var(--color-brown)', fontWeight: 'bold' }}>
+                  Pasarela: {simulatedPlatform === 'web' ? 'Web (PayPal o Mercado Pago)' : simulatedPlatform === 'android' ? 'Google Play Billing' : 'Apple In-App Purchases'}
+                </div>
+
+                <button 
+                  className="btn-primary" 
+                  style={{ width: '100%' }} 
+                  onClick={() => triggerAlert('Suscripción', `¡Suscripción Premium procesada con éxito a través de ${simulatedPlatform === 'web' ? 'PayPal / Mercado Pago' : simulatedPlatform === 'android' ? 'Google Play Billing' : 'Apple In-App Purchases'}!`)}
+                >
+                  Suscribirse con {simulatedPlatform === 'web' ? 'PayPal/MercadoPago' : simulatedPlatform === 'android' ? 'Google Play' : 'Apple Pay'}
                 </button>
               </div>
             )}
@@ -982,8 +1141,8 @@ export default function App() {
                 <div style={{ padding: '0 20px', marginTop: '50px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                     <div>
-                      <h4 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--text-dark)' }}>Cris Lector</h4>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-light)', fontWeight: 'bold' }}>@cris_lector</span>
+                      <h4 style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--text-dark)' }}>{fullName}</h4>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-light)', fontWeight: 'bold' }}>@{username}</span>
                     </div>
                     <button style={{
                       fontSize: '0.75rem',
@@ -1000,7 +1159,7 @@ export default function App() {
                   </div>
 
                   <p style={{ fontSize: '0.8rem', color: 'var(--text-light)', lineHeight: '1.4', marginTop: '12px' }}>
-                    Apasionado de la ciencia ficción, la historia y el desarrollo personal. Buscando siempre el próximo gran libro.
+                    {bio}
                   </p>
 
                   {/* Quick stats */}
@@ -1063,50 +1222,180 @@ export default function App() {
               </div>
             )}
 
-            {/* Bottom Nav Bar (for screens inside app) */}
-            {!['onboarding', 'login', 'register'].includes(currentScreen) && (
-              <div className="device-bottom-nav">
-                <button 
-                  className={`nav-item-btn ${currentScreen === 'home' ? 'active' : ''}`}
-                  onClick={() => setCurrentScreen('home')}
-                >
-                  <BookOpen size={18} />
-                  <span>Inicio</span>
-                </button>
-                <button 
-                  className={`nav-item-btn ${currentScreen === 'shelf' ? 'active' : ''}`}
-                  onClick={() => setCurrentScreen('shelf')}
-                >
-                  <Search size={18} />
-                  <span>Explorar</span>
-                </button>
-                <button 
-                  className={`nav-item-btn ${currentScreen === 'shelf' ? 'active' : ''}`}
-                  onClick={() => setCurrentScreen('shelf')}
-                >
-                  <Grid size={18} />
-                  <span>Estantería</span>
-                </button>
-                <button 
-                  className={`nav-item-btn ${['stats', 'calendar', 'goals'].includes(currentScreen) ? 'active' : ''}`}
-                  onClick={() => setCurrentScreen('stats')}
-                >
-                  <BarChart3 size={18} />
-                  <span>Estadísticas</span>
-                </button>
-                <button 
-                  className={`nav-item-btn ${currentScreen === 'profile' ? 'active' : ''}`}
-                  onClick={() => setCurrentScreen('profile')}
-                >
-                  <User size={18} />
-                  <span>Perfil</span>
-                </button>
+            {/* Custom Alert Modal Overlay */}
+            {alertModal.show && (
+              <div style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0,0,0,0.6)',
+                backdropFilter: 'blur(4px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '24px',
+                zIndex: 10000
+              }}>
+                <div style={{
+                  background: 'var(--bg-white)',
+                  borderRadius: '20px',
+                  padding: '24px',
+                  width: '100%',
+                  maxWidth: '300px',
+                  textAlign: 'center',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.25)'
+                }}>
+                  <h4 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '8px', color: 'var(--color-brown)' }}>
+                    {alertModal.title}
+                  </h4>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-light)', lineHeight: '1.4', marginBottom: '20px' }}>
+                    {alertModal.message}
+                  </p>
+                  <button 
+                    className="btn-primary" 
+                    style={{ width: '100%', padding: '10px' }}
+                    onClick={() => setAlertModal({ ...alertModal, show: false })}
+                  >
+                    Aceptar
+                  </button>
+                </div>
               </div>
             )}
 
-          </div>
-        </div>
+            {/* Custom Add Book Modal Overlay */}
+            {addBookModal && (
+              <div style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0,0,0,0.6)',
+                backdropFilter: 'blur(4px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '24px',
+                zIndex: 10000
+              }}>
+                <div style={{
+                  background: 'var(--bg-white)',
+                  borderRadius: '20px',
+                  padding: '24px',
+                  width: '100%',
+                  maxWidth: '320px',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.25)'
+                }}>
+                  <h4 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '16px', color: 'var(--color-brown)', textAlign: 'center' }}>
+                    Añadir Libro
+                  </h4>
+                  
+                  <div style={{ marginBottom: '12px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Título del libro" 
+                      className="form-input"
+                      style={{ paddingLeft: '16px' }}
+                      value={newBookTitle}
+                      onChange={(e) => setNewBookTitle(e.target.value)}
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: '20px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Autor o Editorial" 
+                      className="form-input"
+                      style={{ paddingLeft: '16px' }}
+                      value={newBookAuthor}
+                      onChange={(e) => setNewBookAuthor(e.target.value)}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <button 
+                      style={{
+                        flex: 1,
+                        background: 'none',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '10px',
+                        padding: '10px',
+                        cursor: 'pointer',
+                        fontSize: '0.85rem',
+                        fontWeight: 'bold'
+                      }}
+                      onClick={() => {
+                        setAddBookModal(false);
+                        setNewBookTitle('');
+                        setNewBookAuthor('');
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      className="btn-primary" 
+                      style={{ flex: 1, padding: '10px', fontSize: '0.85rem' }}
+                      onClick={submitNewBook}
+                    >
+                      Añadir
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
       </main>
+
+      {/* Floating Developer Console */}
+      <div className="developer-console">
+        <div className="console-indicator">
+          <span className="console-dot" style={{ backgroundColor: session ? '#4CAF50' : '#E67E22' }}></span>
+          <span>{session ? 'Supabase Conectado' : 'Modo Sin Conexión (Offline)'}</span>
+        </div>
+        <div className="console-platform-selector">
+          <label style={{ fontSize: '0.75rem', fontWeight: 'bold', marginRight: '6px' }}>Pasarela Activa:</label>
+          <select 
+            value={simulatedPlatform} 
+            onChange={(e: any) => setSimulatedPlatform(e.target.value)}
+            style={{
+              padding: '4px 8px',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              fontSize: '0.75rem',
+              outline: 'none',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="web">💻 Web (PayPal / Mercado Pago)</option>
+            <option value="android">🤖 Android (Google Play Billing)</option>
+            <option value="ios">🍎 iOS (Apple In-App Purchases)</option>
+          </select>
+        </div>
+        {session && (
+          <button 
+            className="console-logout-btn" 
+            onClick={handleSupabaseLogout}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--color-brown)',
+              fontWeight: 'bold',
+              fontSize: '0.75rem',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              marginTop: '4px',
+              padding: 0
+            }}
+          >
+            <LogOut size={12} /> Cerrar Sesión Supabase
+          </button>
+        )}
+      </div>
+
     </div>
   );
 }

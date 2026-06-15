@@ -58,7 +58,7 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 16),
               Center(
                 child: Text(
-                  'Leterbox',
+                  'Legibris',
                   style: Theme.of(context).textTheme.displayLarge?.copyWith(
                         fontSize: 28,
                         fontWeight: FontWeight.bold,
